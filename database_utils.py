@@ -7,6 +7,8 @@ import pymysql
 from collections import Counter
 import yaml
 from huggingface_hub import InferenceClient
+import logging
+import re
 
 # Load config
 with open('config.yaml', 'r') as file:
@@ -15,6 +17,92 @@ with open('config.yaml', 'r') as file:
 EMBEDDING_PROVIDER = config['embedding']['provider']
 HF_MODEL = config['huggingface']['model']
 HF_TOKEN = config['huggingface']['HF_TOKEN']
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+def validate_database_name(dbname):
+    """
+    Validate database name to ensure it's safe for MySQL.
+    Returns sanitized database name.
+    """
+    if not dbname:
+        return "leanrag_default"
+    
+    # Remove invalid characters and ensure it starts with a letter or underscore
+    sanitized = re.sub(r'[^a-zA-Z0-9_]', '_', dbname)
+    if not sanitized[0].isalpha() and sanitized[0] != '_':
+        sanitized = 'db_' + sanitized
+    
+    # MySQL database name max length is 64 characters
+    if len(sanitized) > 64:
+        sanitized = sanitized[:64]
+    
+    return sanitized
+
+
+def get_mysql_connection(dbname=None, create_db=False):
+    """
+    Create MySQL connection with better error handling.
+    
+    Args:
+        dbname: Database name to connect to
+        create_db: Whether to create the database if it doesn't exist
+    
+    Returns:
+        pymysql.Connection object
+    """
+    try:
+        if create_db or not dbname:
+            # Connect without database to create it first
+            connection = pymysql.connect(
+                host='localhost', 
+                port=4321, 
+                user='root',
+                passwd='123', 
+                charset='utf8mb4'
+            )
+            
+            if dbname and create_db:
+                cursor = connection.cursor()
+                validated_dbname = validate_database_name(dbname)
+                cursor.execute(f"CREATE DATABASE IF NOT EXISTS {validated_dbname} CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci")
+                connection.commit()
+                cursor.close()
+                connection.close()
+                
+                # Reconnect to the specific database
+                connection = pymysql.connect(
+                    host='localhost', 
+                    port=4321, 
+                    user='root',
+                    passwd='123', 
+                    database=validated_dbname,
+                    charset='utf8mb4'
+                )
+        else:
+            validated_dbname = validate_database_name(dbname)
+            connection = pymysql.connect(
+                host='localhost', 
+                port=4321, 
+                user='root',
+                passwd='123', 
+                database=validated_dbname,
+                charset='utf8mb4'
+            )
+        
+        logger.info(f"Successfully connected to MySQL database: {dbname or 'default'}")
+        return connection
+        
+    except pymysql.Error as e:
+        logger.error(f"Failed to connect to MySQL: {e}")
+        logger.error("Make sure MySQL container is running. Use: ./mysql-docker.sh start")
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error connecting to MySQL: {e}")
+        raise
 
 
 def emb_text(text):
@@ -146,135 +234,189 @@ def search_vector_search(working_dir, query, topk=10, level_mode=2):
 
 
 def create_db_table_mysql(working_dir):
-    con = pymysql.connect(host='localhost', port=4321, user='root',
-                          passwd='123',  charset='utf8mb4')
-    cur = con.cursor()
+    """
+    Create MySQL database and tables with improved error handling and logging.
+    """
+    logger.info(f"Creating database tables for working directory: {working_dir}")
+    
     # Handle case where working_dir ends with slash
     clean_path = working_dir.rstrip('/')
     dbname = os.path.basename(clean_path)
-    # Ensure we have a valid database name
-    if not dbname:
-        dbname = "leanrag_default"
+    validated_dbname = validate_database_name(dbname)
+    
+    logger.info(f"Using database name: {validated_dbname}")
+    
+    try:
+        # Create database and get connection
+        con = get_mysql_connection(validated_dbname, create_db=True)
+        cur = con.cursor()
 
-    cur.execute(f"drop database if exists {dbname};")
-    cur.execute(f"create database {dbname} character set utf8mb4;")
+        # Drop and create entities table
+        cur.execute("DROP TABLE IF EXISTS entities")
+        entities_sql = """
+        CREATE TABLE entities (
+            entity_name TEXT, 
+            description TEXT, 
+            source_id TEXT,
+            degree INT,
+            parent TEXT,
+            level INT
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """
+        cur.execute(entities_sql)
+        logger.info("Created entities table")
 
-    # 使用库
-    cur.execute(f"use {dbname};")
-    cur.execute("drop table if exists entities;")
-    # 建表
-    cur.execute("create table entities\
-        (entity_name text, description text, source_id text,\
-            degree int,parent text,level int)character set utf8mb4 COLLATE utf8mb4_unicode_ci;")
+        # Drop and create relations table  
+        cur.execute("DROP TABLE IF EXISTS relations")
+        relations_sql = """
+        CREATE TABLE relations (
+            src_tgt TEXT, 
+            tgt_src TEXT, 
+            description TEXT,
+            weight INT,
+            level INT
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """
+        cur.execute(relations_sql)
+        logger.info("Created relations table")
 
-    cur.execute("drop table if exists relations;")
-    cur.execute("create table relations\
-        (src_tgt text, tgt_src text, description text,\
-            weight int,level int)character set utf8mb4 COLLATE utf8mb4_unicode_ci;")
-
-    cur.execute("drop table if exists communities;")
-    cur.execute("create table communities\
-        (entity_name text, entity_description text, findings text\
-             )character set utf8mb4 COLLATE utf8mb4_unicode_ci ;")
-    cur.close()
-    con.close()
+        # Drop and create communities table
+        cur.execute("DROP TABLE IF EXISTS communities")
+        communities_sql = """
+        CREATE TABLE communities (
+            entity_name TEXT, 
+            entity_description TEXT, 
+            findings TEXT
+        ) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci
+        """
+        cur.execute(communities_sql)
+        logger.info("Created communities table")
+        
+        con.commit()
+        cur.close()
+        con.close()
+        
+        logger.info(f"Successfully created database tables for: {validated_dbname}")
+        
+    except Exception as e:
+        logger.error(f"Error creating database tables: {e}")
+        raise
 
 
 def insert_data_to_mysql(working_dir):
+    """
+    Insert data to MySQL with improved error handling and logging.
+    """
+    logger.info(f"Inserting data to MySQL for working directory: {working_dir}")
+    
     # Handle case where working_dir ends with slash
     clean_path = working_dir.rstrip('/')
     dbname = os.path.basename(clean_path)
-    # Ensure we have a valid database name
-    if not dbname:
-        dbname = "leanrag_default"
-    db = pymysql.connect(host='localhost', port=4321, user='root',
-                         passwd='123', database=dbname,  charset='utf8mb4')
-    cursor = db.cursor()
+    validated_dbname = validate_database_name(dbname)
+    
+    try:
+        db = get_mysql_connection(validated_dbname)
+        cursor = db.cursor()
 
-    entity_path = os.path.join(working_dir, "all_entities.json")
-    with open(entity_path, "r")as f:
-        val = []
-        for level, entitys in enumerate(f):
-            local_entity = json.loads(entitys)
-            if type(local_entity) is not dict:
-                for entity in json.loads(entitys):
-                    # entity=json.load(entity_l)
+        # Insert entities
+        entity_path = os.path.join(working_dir, "all_entities.json")
+        if not os.path.exists(entity_path):
+            logger.warning(f"Entity file not found: {entity_path}")
+        else:
+            logger.info("Inserting entities...")
+            with open(entity_path, "r") as f:
+                val = []
+                for level, entitys in enumerate(f):
+                    local_entity = json.loads(entitys)
+                    if type(local_entity) is not dict:
+                        for entity in json.loads(entitys):
+                            entity_name = entity['entity_name']
+                            description = entity['description']
+                            source_id = "|".join(entity['source_id'].split("|")[:5])
+                            degree = entity['degree']
+                            parent = entity['parent']
+                            val.append((entity_name, description, source_id, degree, parent, level))
+                    else:
+                        entity = local_entity
+                        entity_name = entity['entity_name']
+                        description = entity['description']
+                        source_id = "|".join(entity['source_id'].split("|")[:5])
+                        degree = entity['degree']
+                        parent = entity['parent']
+                        val.append((entity_name, description, source_id, degree, parent, level))
+                        
+            if val:
+                sql = "INSERT INTO entities(entity_name, description, source_id, degree, parent, level) VALUES (%s,%s,%s,%s,%s,%s)"
+                try:
+                    cursor.executemany(sql, tuple(val))
+                    db.commit()
+                    logger.info(f"Inserted {len(val)} entities")
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Error inserting entities: {e}")
+                    raise
 
-                    entity_name = entity['entity_name']
-                    description = entity['description']
-                    # if "|Here" in description:
-                    #     description=description.split("|Here")[0]
-                    source_id = "|".join(entity['source_id'].split("|")[:5])
+        # Insert relations
+        relation_path = os.path.join(working_dir, "generate_relations.json")
+        if not os.path.exists(relation_path):
+            logger.warning(f"Relations file not found: {relation_path}")
+        else:
+            logger.info("Inserting relations...")
+            with open(relation_path, "r") as f:
+                val = []
+                for relation_l in f:
+                    relation = json.loads(relation_l)
+                    src_tgt = relation['src_tgt']
+                    tgt_src = relation['tgt_src']
+                    description = relation['description']
+                    weight = relation['weight']
+                    level = relation['level']
+                    val.append((src_tgt, tgt_src, description, weight, level))
+                    
+            if val:
+                sql = "INSERT INTO relations(src_tgt, tgt_src, description, weight, level) VALUES (%s,%s,%s,%s,%s)"
+                try:
+                    cursor.executemany(sql, tuple(val))
+                    db.commit()
+                    logger.info(f"Inserted {len(val)} relations")
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Error inserting relations: {e}")
+                    raise
 
-                    degree = entity['degree']
-                    parent = entity['parent']
-                    val.append((entity_name, description,
-                               source_id, degree, parent, level))
-            else:
-                entity = local_entity
-                entity_name = entity['entity_name']
-                description = entity['description']
-                source_id = "|".join(entity['source_id'].split("|")[:5])
-                degree = entity['degree']
-                parent = entity['parent']
-                val.append((entity_name, description,
-                           source_id, degree, parent, level))
-        sql = "INSERT INTO entities(entity_name, description, source_id, degree,parent,level) VALUES (%s,%s,%s,%s,%s,%s)"
-        try:
-            # 执行sql语句
-            cursor.executemany(sql, tuple(val))
-            # 提交到数据库执行
-            db.commit()
-        except Exception as e:
-            # 发生错误时回滚
-            db.rollback()
-            print(e)
-            print("insert entities error")
+        # Insert communities
+        community_path = os.path.join(working_dir, "community.json")
+        if not os.path.exists(community_path):
+            logger.warning(f"Community file not found: {community_path}")
+        else:
+            logger.info("Inserting communities...")
+            with open(community_path, "r") as f:
+                val = []
+                for community_l in f:
+                    community = json.loads(community_l)
+                    entity_name = community['entity_name']
+                    entity_description = community['entity_description']
+                    findings = str(community['findings'])
+                    val.append((entity_name, entity_description, findings))
+                    
+            if val:
+                sql = "INSERT INTO communities(entity_name, entity_description, findings) VALUES (%s,%s,%s)"
+                try:
+                    cursor.executemany(sql, tuple(val))
+                    db.commit()
+                    logger.info(f"Inserted {len(val)} communities")
+                except Exception as e:
+                    db.rollback()
+                    logger.error(f"Error inserting communities: {e}")
+                    raise
 
-    relation_path = os.path.join(working_dir, "generate_relations.json")
-    with open(relation_path, "r")as f:
-        val = []
-        for relation_l in f:
-            relation = json.loads(relation_l)
-            src_tgt = relation['src_tgt']
-            tgt_src = relation['tgt_src']
-            description = relation['description']
-            weight = relation['weight']
-            level = relation['level']
-            val.append((src_tgt, tgt_src, description, weight, level))
-        sql = "INSERT INTO relations(src_tgt, tgt_src, description,  weight,level) VALUES (%s,%s,%s,%s,%s)"
-        try:
-            # 执行sql语句
-            cursor.executemany(sql, tuple(val))
-            # 提交到数据库执行
-            db.commit()
-        except Exception as e:
-            # 发生错误时回滚
-            db.rollback()
-            print(e)
-            print("insert relations error")
-
-    community_path = os.path.join(working_dir, "community.json")
-    with open(community_path, "r")as f:
-        val = []
-        for community_l in f:
-            community = json.loads(community_l)
-            title = community['entity_name']
-            summary = community['entity_description']
-            findings = str(community['findings'])
-
-            val.append((title, summary, findings))
-        sql = "INSERT INTO communities(entity_name, entity_description,  findings ) VALUES (%s,%s,%s)"
-        try:
-            # 执行sql语句
-            cursor.executemany(sql, tuple(val))
-            # 提交到数据库执行
-            db.commit()
-        except Exception as e:
-            # 发生错误时回滚
-            db.rollback()
-            print(e)
-            print("insert communities error")
+        cursor.close()
+        db.close()
+        logger.info("Successfully inserted all data to MySQL")
+        
+    except Exception as e:
+        logger.error(f"Error in insert_data_to_mysql: {e}")
+        raise
 
 
 def find_tree_root(working_dir, entity):
@@ -461,58 +603,92 @@ def get_text_units(working_dir, chunks_set, chunks_file, k=5):
 
 
 def search_community(entity_name, working_dir):
-    db = pymysql.connect(host='localhost', port=4321, user='root',
-                         passwd='123',  charset='utf8mb4')
-    # Handle case where working_dir ends with slash
-    clean_path = working_dir.rstrip('/')
-    db_name = os.path.basename(clean_path)
-    # Ensure we have a valid database name
-    if not db_name:
-        db_name = "leanrag_default"
-    cursor = db.cursor()
-    sql = f"select * from {db_name}.communities where entity_name=%s"
-    cursor.execute(sql, (entity_name,))
-    ret = cursor.fetchall()
-    if len(ret) != 0:
-        return ret[0]
-    else:
+    """
+    Search for community information with improved error handling.
+    """
+    try:
+        # Handle case where working_dir ends with slash
+        clean_path = working_dir.rstrip('/')
+        dbname = os.path.basename(clean_path)
+        validated_dbname = validate_database_name(dbname)
+        
+        db = get_mysql_connection(validated_dbname)
+        cursor = db.cursor()
+        sql = "SELECT * FROM communities WHERE entity_name=%s"
+        cursor.execute(sql, (entity_name,))
+        ret = cursor.fetchall()
+        cursor.close()
+        db.close()
+        
+        if len(ret) != 0:
+            return ret[0]
+        else:
+            return ""
+            
+    except Exception as e:
+        logger.error(f"Error searching community for entity {entity_name}: {e}")
         return ""
-        # return ret[0]
 
 
 def insert_origin_relations(working_dir):
-    dbname = os.path.basename(working_dir)
-    db = pymysql.connect(host='localhost', port=4321, user='root',
-                         passwd='123', database=dbname,  charset='utf8mb4')
-    cursor = db.cursor()
-    # relation_path=os.path.join(f"datasets/{dbname}","relation.jsonl")
-    # relation_path=os.path.join(f"/data/zyz/reproduce/HiRAG/eval/datasets/{dbname}/test")
-    relation_path = os.path.join(f"hi_ex/{dbname}", "relation.jsonl")
-    # relation_path=os.path.join(f"32b/{dbname}","relation.jsonl")
-    with open(relation_path, "r")as f:
-        val = []
-        for relation_l in f:
-            relation = json.loads(relation_l)
-            src_tgt = relation['src_tgt']
-            tgt_src = relation['tgt_src']
-            if len(src_tgt) > 190 or len(tgt_src) > 190:
-                print(f"src_tgt or tgt_src too long: {src_tgt} {tgt_src}")
-                continue
-            description = relation['description']
-            weight = relation['weight']
-            level = 0
-            val.append((src_tgt, tgt_src, description, weight, level))
-        sql = "INSERT INTO relations(src_tgt, tgt_src, description,  weight,level) VALUES (%s,%s,%s,%s,%s)"
-        try:
-            # 执行sql语句
-            cursor.executemany(sql, tuple(val))
-            # 提交到数据库执行
-            db.commit()
-        except Exception as e:
-            # 发生错误时回滚
-            db.rollback()
-            print(e)
-            print("insert relations error")
+    """
+    Insert origin relations with improved error handling and logging.
+    """
+    logger.info(f"Inserting origin relations for working directory: {working_dir}")
+    
+    clean_path = working_dir.rstrip('/')
+    dbname = os.path.basename(clean_path)
+    validated_dbname = validate_database_name(dbname)
+    
+    try:
+        db = get_mysql_connection(validated_dbname)
+        cursor = db.cursor()
+        
+        # relation_path=os.path.join(f"datasets/{dbname}","relation.jsonl")
+        # relation_path=os.path.join(f"/data/zyz/reproduce/HiRAG/eval/datasets/{dbname}/test")
+        relation_path = os.path.join(f"hi_ex/{dbname}", "relation.jsonl")
+        # relation_path=os.path.join(f"32b/{dbname}","relation.jsonl")
+        
+        if not os.path.exists(relation_path):
+            logger.warning(f"Origin relations file not found: {relation_path}")
+            return
+            
+        logger.info("Inserting origin relations...")
+        with open(relation_path, "r") as f:
+            val = []
+            skipped_count = 0
+            for relation_l in f:
+                relation = json.loads(relation_l)
+                src_tgt = relation['src_tgt']
+                tgt_src = relation['tgt_src']
+                if len(src_tgt) > 190 or len(tgt_src) > 190:
+                    logger.warning(f"Skipping relation with long text: {src_tgt[:50]}... -> {tgt_src[:50]}...")
+                    skipped_count += 1
+                    continue
+                description = relation['description']
+                weight = relation['weight']
+                level = 0
+                val.append((src_tgt, tgt_src, description, weight, level))
+                
+        if val:
+            sql = "INSERT INTO relations(src_tgt, tgt_src, description, weight, level) VALUES (%s,%s,%s,%s,%s)"
+            try:
+                cursor.executemany(sql, tuple(val))
+                db.commit()
+                logger.info(f"Inserted {len(val)} origin relations (skipped {skipped_count})")
+            except Exception as e:
+                db.rollback()
+                logger.error(f"Error inserting origin relations: {e}")
+                raise
+        else:
+            logger.warning("No valid origin relations to insert")
+            
+        cursor.close()
+        db.close()
+        
+    except Exception as e:
+        logger.error(f"Error in insert_origin_relations: {e}")
+        raise
 
 
 if __name__ == "__main__":

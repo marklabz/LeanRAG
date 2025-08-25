@@ -76,6 +76,7 @@ dependencies = [
     "neo4j>=5.0.0",
     "milvus-lite>=2.4.0",
     "pymilvus>=2.4.0",
+    "pymysql>=1.0.0",
     
     # Utilities
     "pydantic>=2.0.0",
