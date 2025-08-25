@@ -4,15 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "leanrag"
-version = "0.1.0"
+version = "0.0.1"
 description = "Knowledge-Graph-Based Generation with Semantic Aggregation and Hierarchical Retrieval"
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "LeanRAG Team"},
+    {name = "RaZzzyz"},
 ]
 maintainers = [
-    {name = "LeanRAG Team"},
+    {name = "RaZzzyz"},
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -85,6 +85,10 @@ dependencies = [
     "rich>=13.0.0",
     "typer>=0.9.0",
     
+    # Text processing and search
+    "pyahocorasick>=2.0.0",
+    "jieba>=0.40.0",
+    
     # GitHub dependencies
     "lightrag-hku @ git+https://github.com/HKUDS/LightRAG.git@1c870454f1286ab42c1ad3d61925c17bce773dd8",
 ]
@@ -100,7 +104,7 @@ dev = [
 ]
 
 nano-graphrag = [
-    # Uses latest version which has improved Python 3.11+ compatibility
+    # Updated to use latest version which now supports Python 3.11+
     "nano-graphrag @ git+https://github.com/gusye1234/nano-graphrag.git",
 ]
 
