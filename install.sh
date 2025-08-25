@@ -61,6 +61,12 @@ print_success "uv package manager detected ✓"
 PYTHON_VERSION=${1:-"3.11"}
 print_status "Using Python version: $PYTHON_VERSION"
 
+# Warn about nano-graphrag compatibility
+if [[ $(echo "$PYTHON_VERSION >= 3.11" | bc -l 2>/dev/null || python3 -c "print(1 if float('$PYTHON_VERSION') >= 3.11 else 0)" 2>/dev/null || echo "0") -eq 1 ]]; then
+    print_warning "Note: Python $PYTHON_VERSION may have compatibility issues with nano-graphrag"
+    print_warning "For full compatibility, consider using Python 3.10: ./install.sh 3.10"
+fi
+
 # Step 1: Create virtual environment if it doesn't exist
 if [[ ! -d "leanrag" ]]; then
     print_status "Creating Python virtual environment with Python $PYTHON_VERSION..."
@@ -101,13 +107,17 @@ fi
 
 # Step 4: Install nano-graphrag (optional but recommended)
 print_status "Installing nano-graphrag (GitHub dependency)..."
+print_status "Using latest version which should support Python 3.11+"
+
 uv pip install -e ".[nano-graphrag]"
 
 if [[ $? -eq 0 ]]; then
     print_success "nano-graphrag installed successfully ✓"
 else
-    print_warning "nano-graphrag installation failed (this is optional)"
-    print_warning "You can try installing it separately later with: uv pip install -e '.[nano-graphrag]'"
+    print_warning "nano-graphrag installation failed"
+    print_warning "If you encounter Python compatibility issues, try:"
+    print_status "  uv pip install git+https://github.com/gusye1234/nano-graphrag.git"
+    print_status "Or use Python 3.10 for guaranteed compatibility: ./install.sh 3.10"
 fi
 
 # Step 5: Install full optional dependencies
@@ -149,26 +159,39 @@ print_status "Verifying installation..."
 
 # Test imports
 python3 -c "
+import sys
+success_count = 0
+total_count = 3
+
 try:
     import leanrag
     print('✅ leanrag package imported successfully')
+    success_count += 1
 except ImportError as e:
     print(f'❌ Failed to import leanrag: {e}')
+    print('This is a critical error - installation failed')
     exit(1)
 
 try:
     import lightrag_hku
     print('✅ lightrag-hku imported successfully')
+    success_count += 1
 except ImportError as e:
     print(f'⚠️  lightrag-hku import failed: {e}')
 
 try:
     import nano_graphrag
     print('✅ nano-graphrag imported successfully')
+    success_count += 1
 except ImportError as e:
     print(f'⚠️  nano-graphrag import failed: {e}')
+    print('   This is expected if nano-graphrag installation was skipped')
 
-print('✅ Core installation verification complete')
+print(f'✅ Installation verification complete ({success_count}/{total_count} packages imported)')
+if success_count >= 2:
+    print('✅ Core functionality is available')
+else:
+    print('⚠️  Some issues detected, but core package should work')
 "
 
 if [[ $? -eq 0 ]]; then
@@ -190,9 +213,15 @@ echo "   2. Check installed packages: uv pip list"
 echo "   3. Run your LeanRAG applications!"
 echo ""
 echo "💡 Usage Tips:"
-echo "   • To use a different Python version, run: ./install.sh 3.12"
+echo "   • To use a different Python version, run: ./install.sh 3.10"
+echo "   • For full nano-graphrag support, use Python 3.10: ./install.sh 3.10"
 echo "   • To see available Python versions: uv python list"
 echo "   • To reinstall, delete 'leanrag' folder and run script again"
+echo ""
+echo "🔧 Troubleshooting:"
+echo "   • If nano-graphrag failed: This is often due to Python version compatibility"
+echo "   • The core LeanRAG functionality works without nano-graphrag"
+echo "   • For full compatibility, create a separate environment with Python 3.10"
 echo ""
 echo "⚠️  Note: You may see a harmless warning about google-cloud-aiplatform[all]"
 echo "   This doesn't affect functionality and can be safely ignored."

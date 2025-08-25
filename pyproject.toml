@@ -100,7 +100,7 @@ dev = [
 ]
 
 nano-graphrag = [
-    # Updated to use latest version which now supports Python 3.11+
+    # Uses latest version which has improved Python 3.11+ compatibility
     "nano-graphrag @ git+https://github.com/gusye1234/nano-graphrag.git",
 ]
 
