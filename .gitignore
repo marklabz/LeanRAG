@@ -4,3 +4,5 @@ __pycache__/database_utils.cpython-311.pyc
 CommonKG/data
 *.sh
 visualize.py
+leanrag.egg-info/
+src/
